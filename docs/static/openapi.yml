@@ -51513,6 +51513,8 @@ definitions:
     description: >-
       QueryAppVersionResponse is the response type for the Query/AppVersion RPC
       method.
+  planet.blog.MsgSendIbcPostResponse:
+    type: object
   planet.blog.Params:
     type: object
     description: Params defines the parameters for the module.
