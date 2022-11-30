@@ -2,16 +2,21 @@ package keeper
 
 import (
 	"errors"
+	"strconv"
+
+	"planet/x/blog/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
 	clienttypes "github.com/cosmos/ibc-go/v2/modules/core/02-client/types"
 	channeltypes "github.com/cosmos/ibc-go/v2/modules/core/04-channel/types"
 	host "github.com/cosmos/ibc-go/v2/modules/core/24-host"
-	"planet/x/blog/types"
 )
 
-// TransmitIbcPostPacket transmits the packet over IBC with the specified source port and source channel
+// 送信する
+// IBC経由でパケットを送信するために手動で呼び出されます。
+// このメソッドは、パケットがIBC経由で別のブロックチェーンアプリに送信される前のロジックも定義します。
+// 指定されたソースポートとソースチャネルを使用してIBC経由でパケットを送信します。
 func (k Keeper) TransmitIbcPostPacket(
 	ctx sdk.Context,
 	packetData types.IbcPostPacketData,
@@ -66,20 +71,35 @@ func (k Keeper) TransmitIbcPostPacket(
 	return nil
 }
 
-// OnRecvIbcPostPacket processes packet reception
+// 受信時
+// パケットがチェーンで受信されると自動的に呼び出され、パケット受信ロジックを定義します。
+// パケット受信を処理します
 func (k Keeper) OnRecvIbcPostPacket(ctx sdk.Context, packet channeltypes.Packet, data types.IbcPostPacketData) (packetAck types.IbcPostPacketAck, err error) {
 	// validate packet data upon receiving
 	if err := data.ValidateBasic(); err != nil {
 		return packetAck, err
 	}
 
-	// TODO: packet reception logic
+	// 投稿メッセージを受信したら、受信チェーンにタイトルとコンテンツを含む新しい投稿を作成する。
+	// AppendPost：新しく追加された投稿のIDを返します。この値は、承認によってソースチェーンに返すことができる。
+	id := k.AppendPost(
+		ctx,
+		types.Post{
+			//メッセージの発信元であるブロックチェーンアプリとメッセージの作成者を特定するには、<portID>-<channelID>-<creatorAddress>
+			Creator: packet.SourcePort + "-" + packet.SourceChannel + "-" + data.Creator,
+			Title:   data.Title,
+			Content: data.Content,
+		},
+	)
+
+	packetAck.PostID = strconv.FormatUint(id, 10)
 
 	return packetAck, nil
 }
 
-// OnAcknowledgementIbcPostPacket responds to the the success or failure of a packet
-// acknowledgement written on the receiving chain.
+// パケットがチェーンで受信されると自動的に呼び出され、パケット受信ロジックを定義します。
+// パケットの成功または失敗に応答します
+// 受信チェーンに書かれた承認
 func (k Keeper) OnAcknowledgementIbcPostPacket(ctx sdk.Context, packet channeltypes.Packet, data types.IbcPostPacketData, ack channeltypes.Acknowledgement) error {
 	switch dispatchedAck := ack.Response.(type) {
 	case *channeltypes.Acknowledgement_Error:
@@ -97,19 +117,38 @@ func (k Keeper) OnAcknowledgementIbcPostPacket(ctx sdk.Context, packet channelty
 			return errors.New("cannot unmarshal acknowledgment")
 		}
 
-		// TODO: successful acknowledgement logic
+		//送信ブロックチェーンにsentPostを保存して、ターゲットチェーンで投稿が受信されたことを確認します。
+		//投稿を識別するためのタイトルとターゲットを格納
+		k.AppendSentPost(
+			ctx,
+			types.SentPost{
+				Creator: data.Creator,
+				PostID:  packetAck.PostID,
+				Title:   data.Title,
+				Chain:   packet.DestinationPort + "-" + packet.DestinationChannel,
+			},
+		)
 
 		return nil
 	default:
 		// The counter-party module doesn't implement the correct acknowledgment format
-		return errors.New("invalid acknowledgment format")
+		return errors.New("the counter-party module does not implement the correct acknowledgment format")
 	}
 }
 
-// OnTimeoutIbcPostPacket responds to the case where a packet has not been transmitted because of a timeout
+// 送信されたパケットがタイムアウトすると、フックが呼び出されます。パケットがターゲットチェーンで受信されない場合のロジックを定義します。
+// タイムアウトのためにパケットが送信されなかった場合に応答します
 func (k Keeper) OnTimeoutIbcPostPacket(ctx sdk.Context, packet channeltypes.Packet, data types.IbcPostPacketData) error {
 
-	// TODO: packet timeout logic
+	//ターゲットチェーンによって受信されていない投稿をtimedoutPost投稿に格納する
+	k.AppendTimedoutPost(
+		ctx,
+		types.TimedoutPost{
+			Title:   data.Title,
+			Creator: data.Creator,
+			Chain:   packet.DestinationPort + "-" + packet.DestinationChannel,
+		},
+	)
 
 	return nil
 }
